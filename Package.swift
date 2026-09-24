@@ -11,7 +11,13 @@ let package = Package(
         .executableTarget(
             name: "Snipbook",
             dependencies: ["Highlightr"],
-            path: "Sources/Snipbook"
+            path: "Sources/Snipbook",
+            resources: [.copy("Resources/AppIcons")]
+        ),
+        .testTarget(
+            name: "SnipbookTests",
+            dependencies: ["Snipbook"],
+            path: "Tests/SnipbookTests"
         )
     ]
 )

@@ -11,8 +11,11 @@ struct ContentView: View {
             SnippetListView(store: store)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 300)
         } detail: {
-            if let snippet = store.selectedSnippet {
+            let selected = store.selectedSnippets
+            if selected.count == 1, let snippet = selected.first {
                 SnippetDetailView(store: store, snippet: snippet)
+            } else if selected.count > 1 {
+                MultiSelectionView(store: store, items: selected)
             } else {
                 ContentUnavailableView("No Snippet Selected", systemImage: "curlybraces",
                                        description: Text("Pick a snippet, or press ⌘N to create one."))
@@ -39,21 +42,26 @@ struct SidebarView: View {
     var body: some View {
         List(selection: $store.sidebarSelection) {
             Section("Library") {
-                Label("All Snippets", systemImage: "tray.full")
-                    .badge(store.snippets.count)
-                    .tag(SidebarItem.all)
-                    .dropDestination(for: URL.self) { urls, _ in store.receiveDrop(of: urls, into: store.root) }
+                DropTargetLabel(title: "All Snippets", systemImage: "tray.full") { urls in
+                    store.receiveDrop(of: urls, into: store.root)
+                }
+                .badge(store.snippets.count)
+                .tag(SidebarItem.all)
+                .help("Drop folders or snippets here to move them to the top level")
+
                 Label("Locked", systemImage: "lock")
                     .badge(store.lockedCount)
                     .tag(SidebarItem.locked)
             }
             Section("Folders") {
                 OutlineGroup(store.folders, children: \.children) { folder in
-                    Label(folder.name, systemImage: "folder")
-                        .badge(store.snippets.filter { $0.folderPath == folder.id }.count)
-                        .tag(SidebarItem.folder(folder.id))
-                        .dropDestination(for: URL.self) { urls, _ in store.receiveDrop(of: urls, into: folder.url) }
-                        .contextMenu { folderMenu(folder) }
+                    DropTargetLabel(title: folder.name, systemImage: "folder") { urls in
+                        store.receiveDrop(of: urls, into: folder.url)
+                    }
+                    .draggable(store.beginDrag(folder: folder))
+                    .badge(store.folderCounts[folder.id] ?? 0)
+                    .tag(SidebarItem.folder(folder.id))
+                    .contextMenu { folderMenu(folder) }
                 }
             }
         }
@@ -86,10 +94,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func folderMenu(_ folder: FolderNode) -> some View {
-        Button("New Snippet Here") {
-            store.sidebarSelection = .folder(folder.id)
-            store.createSnippet(language: store.lastLanguage)
-        }
+        Button("New Snippet Here") { store.createSnippet(language: store.lastLanguage, in: folder.url) }
         Button("New Subfolder") { store.createFolder(in: folder.url) }
         Divider()
         Button("Rename…") { store.folderPendingRename = folder.url }
@@ -99,17 +104,43 @@ struct SidebarView: View {
     }
 }
 
+/// Sidebar row that accepts dropped snippets, folders, and Finder files, and highlights while targeted.
+struct DropTargetLabel: View {
+    let title: String
+    let systemImage: String
+    let onDrop: ([URL]) -> Bool
+    @State private var isTargeted = false
+
+    var body: some View {
+        Label(title, systemImage: isTargeted ? "\(systemImage).fill" : systemImage)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.accentColor.opacity(isTargeted ? 0.3 : 0))
+                    .padding(.horizontal, -6)
+                    .padding(.vertical, -3)
+            }
+            .dropDestination(for: URL.self) { urls, _ in
+                onDrop(urls)
+            } isTargeted: { isTargeted = $0 }
+    }
+}
+
 // MARK: - Snippet list
 
 struct SnippetListView: View {
     @Bindable var store: LibraryStore
 
     var body: some View {
-        let showFolder = store.sidebarSelection == .all || store.sidebarSelection == .locked
-        List(store.visibleSnippets, selection: $store.selectedSnippetID) { snippet in
-            SnippetRow(snippet: snippet, folder: showFolder ? store.relativeFolder(of: snippet) : nil)
-                .draggable(snippet.url)
-                .contextMenu { SnippetMenu(store: store, snippet: snippet) }
+        List(selection: $store.selection) {
+            ForEach(store.visibleSnippets) { snippet in
+                SnippetRow(snippet: snippet, folder: store.folderLabel(for: snippet))
+                    .draggable(store.beginDrag(snippet))
+            }
+        }
+        .contextMenu(forSelectionType: String.self) { ids in
+            SnippetMenu(store: store, items: store.snippets(withIDs: ids))
         }
         .overlay {
             if store.visibleSnippets.isEmpty {
@@ -165,7 +196,7 @@ struct SnippetRow: View {
                 .lineLimit(2)
             HStack(spacing: 6) {
                 LanguageBadge(language: snippet.language)
-                if let folder, !folder.isEmpty {
+                if let folder {
                     Label(folder, systemImage: "folder").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
                 }
             }
@@ -192,26 +223,44 @@ struct LanguageBadge: View {
     }
 }
 
+/// Actions for one or more snippets, shared by the list's context menu.
 struct SnippetMenu: View {
     let store: LibraryStore
-    let snippet: Snippet
+    let items: [Snippet]
 
     var body: some View {
-        Button("Copy Contents") { store.copyToPasteboard(snippet) }
-        Button(snippet.isLocked ? "Unlock" : "Lock") { store.toggleLock(snippet) }
-        Button("Duplicate") { store.duplicate(snippet) }
+        if !items.isEmpty {
+            let plural = items.count > 1
+            Button(plural ? "Copy Contents of \(items.count) Snippets" : "Copy Contents") { store.copyToPasteboard(items) }
+            if items.contains(where: { !$0.isLocked }) {
+                Button(plural ? "Lock \(items.count) Snippets" : "Lock") { store.setLocked(true, for: items) }
+            }
+            if items.contains(where: \.isLocked) {
+                Button(plural ? "Unlock \(items.count) Snippets" : "Unlock") { store.setLocked(false, for: items) }
+            }
+            Button("Duplicate") { store.duplicate(items) }
+            MoveToMenu(store: store, items: items)
+            Button("Reveal in Finder") { store.reveal(items.map(\.url)) }
+            Divider()
+            Button("Move to Trash", role: .destructive) { store.trash(items) }
+                .disabled(items.allSatisfy(\.isLocked))
+        }
+    }
+}
+
+struct MoveToMenu: View {
+    let store: LibraryStore
+    let items: [Snippet]
+
+    var body: some View {
         Menu("Move To") {
-            Button("Library Root") { store.move(snippet, toFolder: store.root) }
+            Button("Library Root") { store.move(items, toFolder: store.root) }
             Divider()
             ForEach(store.allFoldersFlat) { folder in
-                Button(store.relativeFolder(ofPath: folder.id)) { store.move(snippet, toFolder: folder.url) }
+                Button(store.relativeFolder(ofPath: folder.id)) { store.move(items, toFolder: folder.url) }
             }
         }
-        .disabled(snippet.isLocked)
-        Button("Reveal in Finder") { store.reveal(snippet.url) }
-        Divider()
-        Button("Move to Trash", role: .destructive) { store.trash(snippet) }
-            .disabled(snippet.isLocked)
+        .disabled(items.allSatisfy(\.isLocked))
     }
 }
 
@@ -244,7 +293,7 @@ struct SnippetDetailView: View {
                 .fixedSize()
                 .disabled(snippet.isLocked)
 
-                Button { store.copyToPasteboard(snippet) } label: {
+                Button { store.copyToPasteboard([snippet]) } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
                 .labelStyle(.iconOnly)
@@ -252,7 +301,7 @@ struct SnippetDetailView: View {
 
                 Toggle(isOn: Binding(
                     get: { snippet.isLocked },
-                    set: { store.setLocked($0, for: snippet) }
+                    set: { store.setLocked($0, for: [snippet]) }
                 )) {
                     Label(snippet.isLocked ? "Locked" : "Unlocked",
                           systemImage: snippet.isLocked ? "lock.fill" : "lock.open")
@@ -299,5 +348,51 @@ struct SnippetDetailView: View {
         } else if title != snippet.title {
             store.rename(snippet, to: title)
         }
+    }
+}
+
+/// Shown when several snippets are selected: bulk actions instead of an editor.
+struct MultiSelectionView: View {
+    let store: LibraryStore
+    let items: [Snippet]
+
+    var body: some View {
+        let lockedCount = items.filter(\.isLocked).count
+        VStack(spacing: 18) {
+            Image(systemName: "square.stack.3d.up")
+                .font(.system(size: 48, weight: .light))
+                .foregroundStyle(.secondary)
+            VStack(spacing: 4) {
+                Text("\(items.count) Snippets Selected").font(.title2.weight(.semibold))
+                Text(lockedCount == 0 ? "None locked" : "\(lockedCount) locked")
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button { store.setLocked(true, for: items) } label: { Label("Lock All", systemImage: "lock.fill") }
+                    .disabled(lockedCount == items.count)
+                Button { store.setLocked(false, for: items) } label: { Label("Unlock All", systemImage: "lock.open") }
+                    .disabled(lockedCount == 0)
+            }
+            HStack {
+                Button { store.copyToPasteboard(items) } label: { Label("Copy All", systemImage: "doc.on.doc") }
+                MoveToMenu(store: store, items: items).fixedSize()
+                Button { store.reveal(items.map(\.url)) } label: { Label("Reveal", systemImage: "folder") }
+            }
+            Button(role: .destructive) { store.trash(items) } label: { Label("Move to Trash", systemImage: "trash") }
+                .disabled(lockedCount == items.count)
+
+            Text(items.prefix(8).map(\.title).joined(separator: ", ") + (items.count > 8 ? ", …" : ""))
+                .font(.callout)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+            Text("Tip: drag the selection onto a folder in the sidebar to move it.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .controlSize(.large)
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

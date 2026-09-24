@@ -4,12 +4,14 @@ A native macOS code snippet manager, inspired by SnippetsLab.
 
 - **Syntax coloring** for Ruby, Rails ERB, Bash, SQL, JavaScript, TypeScript, HTML, CSS/SCSS, Python, C, C++, Arduino, Swift, YAML, JSON, INI/TOML and Markdown (via [Highlightr](https://github.com/raspu/Highlightr) / highlight.js). Follows light and dark mode.
 - **Per-snippet locking.** Lock uses the Finder "Locked" flag (`uchg`), so macOS itself refuses edits, renames, moves and deletes until you unlock.
-- **Folder organization.** Nested folders, drag snippets onto folders, drag files in from Finder to import them.
+- **Folder organization.** Nested folders with recursive snippet counts. Drag snippets onto folders, drag folders onto folders to nest them (or onto All Snippets to move them to the top level), and drag files in from Finder to import them.
+- **Multi-select** with ⌘-click and ⇧-click: lock, unlock, copy, move, duplicate or trash many snippets at once, or drag the whole selection onto a folder.
+- **Settings** (⌘,): library location (with the choice to move your snippets or leave them), default folder for new snippets, whether folders list their subfolders' snippets, and a choice of four app icons.
 - Search across titles, languages and contents; copy a snippet with one click (⇧⌘C).
 
 ## Your library is just files
 
-Snippets live in `~/Snippets` as plain files in real folders. The file extension sets the language (`.rb`, `.sh`, `.sql`, ...). That means you can `grep` them, put the folder under git, or sync it with iCloud Drive. Use **File > Choose Library Folder...** to point Snipbook somewhere else. A starter set of snippets is created the first time the folder does not exist.
+Snippets live in `~/Snippets` as plain files in real folders. The file extension sets the language (`.rb`, `.sh`, `.sql`, ...). That means you can `grep` them, put the folder under git, or sync it with iCloud Drive. Use **Settings > Library > Change...** (or File > Choose Library Folder...) to point Snipbook somewhere else; you can move your existing snippets along or leave them where they are. Lock state survives the move. A starter set of snippets is created the first time the folder does not exist.
 
 ## Build
 
@@ -20,7 +22,7 @@ Requires macOS 14+ and Xcode (the Command Line Tools alone lack SwiftUI's macro 
 ./scripts/build-app.sh --install  # also copies it to /Applications
 ```
 
-The script uses `/Applications/Xcode.app` even if `xcode-select` points at the Command Line Tools. For quick iteration: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run`.
+The script uses `/Applications/Xcode.app` even if `xcode-select` points at the Command Line Tools. For quick iteration: `swift run`. Run the tests with `swift test`; they exercise the file operations (moves, nesting, counts, library moves with locked files) against a temporary library.
 
 ## Shortcuts
 
@@ -28,7 +30,8 @@ The script uses `/Applications/Xcode.app` even if `xcode-select` points at the C
 | --- | --- |
 | New snippet | ⌘N |
 | New folder | ⇧⌘N |
-| Lock / unlock | ⌘L |
+| Settings | ⌘, |
+| Lock / unlock (whole selection) | ⌘L |
 | Copy contents | ⇧⌘C |
 | Duplicate | ⌘D |
 | Find in snippet | ⌘F |
@@ -43,5 +46,7 @@ The script uses `/Applications/Xcode.app` even if `xcode-select` points at the C
 | `Views.swift` | Sidebar, snippet list, detail view |
 | `CodeEditor.swift` | NSTextView with live highlighting |
 | `Language.swift` | Extension to language table |
+| `SettingsView.swift` | Settings window |
+| `AppIcon.swift` | Icon choices; sets the Dock icon and the app bundle's Finder icon |
 | `SeedLibrary.swift` | Starter snippets |
 | `DebugSnapshot.swift` | Debug-only window snapshot for UI checks |

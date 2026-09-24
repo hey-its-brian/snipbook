@@ -13,6 +13,7 @@ struct SnipbookApp: App {
         Window("Snipbook", id: "main") {
             ContentView(store: store)
                 .frame(minWidth: 900, minHeight: 520)
+                .onAppear { AppIconManager.syncOnLaunch(store.appIcon) }
                 #if DEBUG
                 .onAppear { DebugSnapshot.scheduleIfRequested(store: store) }
                 #endif
@@ -26,6 +27,10 @@ struct SnipbookApp: App {
         }
         .defaultSize(width: 1200, height: 760)
         .commands { SnipbookCommands(store: store) }
+
+        Settings {
+            SettingsView(store: store)
+        }
     }
 }
 
@@ -51,29 +56,30 @@ struct SnipbookCommands: Commands {
         }
 
         CommandMenu("Snippet") {
-            let snippet = store.selectedSnippet
-            Button(snippet?.isLocked == true ? "Unlock" : "Lock") {
-                if let snippet { store.toggleLock(snippet) }
+            let items = store.selectedSnippets
+            let plural = items.count > 1 ? " \(items.count) Snippets" : ""
+            Button(!items.isEmpty && items.allSatisfy(\.isLocked) ? "Unlock\(plural)" : "Lock\(plural)") {
+                store.toggleLock(items)
             }
             .keyboardShortcut("l")
-            .disabled(snippet == nil)
+            .disabled(items.isEmpty)
 
-            Button("Copy Contents") { if let snippet { store.copyToPasteboard(snippet) } }
+            Button("Copy Contents") { store.copyToPasteboard(items) }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
-                .disabled(snippet == nil)
+                .disabled(items.isEmpty)
 
-            Button("Duplicate") { if let snippet { store.duplicate(snippet) } }
+            Button("Duplicate") { store.duplicate(items) }
                 .keyboardShortcut("d")
-                .disabled(snippet == nil)
+                .disabled(items.isEmpty)
 
-            Button("Reveal in Finder") { if let snippet { store.reveal(snippet.url) } }
-                .disabled(snippet == nil)
+            Button("Reveal in Finder") { store.reveal(items.map(\.url)) }
+                .disabled(items.isEmpty)
 
             Divider()
 
             // No shortcut on purpose: ⌘⌫ means "delete to start of line" while editing.
-            Button("Move to Trash") { if let snippet { store.trash(snippet) } }
-                .disabled(snippet == nil || snippet?.isLocked == true)
+            Button("Move to Trash") { store.trash(items) }
+                .disabled(items.isEmpty || items.allSatisfy(\.isLocked))
         }
     }
 }

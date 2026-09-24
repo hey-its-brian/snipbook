@@ -17,7 +17,7 @@ BIN="$(swift build -c release --show-bin-path)"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/Snipbook" "$APP/Contents/MacOS/"
-cp -R "$BIN/Highlightr_Highlightr.bundle" "$APP/Contents/Resources/"
+cp -R "$BIN/Highlightr_Highlightr.bundle" "$BIN/Snipbook_Snipbook.bundle" "$APP/Contents/Resources/"
 [[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
