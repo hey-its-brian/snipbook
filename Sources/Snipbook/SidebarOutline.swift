@@ -51,6 +51,7 @@ struct SidebarOutline: NSViewRepresentable {
         let snapshot = Coordinator.Snapshot(
             folders: store.folders,
             counts: store.folderCounts,
+            tags: store.tagCounts,
             total: store.snippets.count,
             locked: store.lockedCount
         )
@@ -66,6 +67,7 @@ struct SidebarOutline: NSViewRepresentable {
             case all
             case locked
             case folder(FolderNode)
+            case tag(String)
         }
 
         let kind: Kind
@@ -81,6 +83,7 @@ struct SidebarOutline: NSViewRepresentable {
             case .all: .all
             case .locked: .locked
             case .folder(let folder): .folder(folder.id)
+            case .tag(let tag): .tag(tag)
             case .header: nil
             }
         }
@@ -98,6 +101,7 @@ struct SidebarOutline: NSViewRepresentable {
         struct Snapshot: Equatable {
             var folders: [FolderNode]
             var counts: [String: Int]
+            var tags: [String: Int]
             var total: Int
             var locked: Int
         }
@@ -116,7 +120,8 @@ struct SidebarOutline: NSViewRepresentable {
         func refresh(_ snapshot: Snapshot? = nil) {
             guard let outline else { return }
             let snapshot = snapshot ?? Snapshot(folders: store.folders, counts: store.folderCounts,
-                                                total: store.snippets.count, locked: store.lockedCount)
+                                                tags: store.tagCounts, total: store.snippets.count,
+                                                locked: store.lockedCount)
             if snapshot != lastSnapshot {
                 lastSnapshot = snapshot
                 rebuild()
@@ -136,6 +141,10 @@ struct SidebarOutline: NSViewRepresentable {
                 Node(.header("Library"), children: [allNode, Node(.locked)]),
                 Node(.header("Folders"), children: folderNodes(store.folders)),
             ]
+            let tags = store.allTags
+            if !tags.isEmpty {
+                roots.append(Node(.header("Tags"), children: tags.map { Node(.tag($0)) }))
+            }
         }
 
         private func restoreExpansion(_ nodes: [Node]) {
@@ -228,6 +237,8 @@ struct SidebarOutline: NSViewRepresentable {
                 cell.configure(title: "Locked", symbol: "lock", count: store.lockedCount)
             case .folder(let folder):
                 cell.configure(title: folder.name, symbol: "folder", count: store.folderCounts[folder.id] ?? 0)
+            case .tag(let tag):
+                cell.configure(title: tag, symbol: "tag", count: store.tagCounts[tag] ?? 0)
             case .header:
                 break
             }
@@ -267,9 +278,18 @@ struct SidebarOutline: NSViewRepresentable {
             if index != NSOutlineViewDropOnItemIndex {
                 if case .folder = target?.kind {
                     outlineView.setDropItem(target, dropChildIndex: NSOutlineViewDropOnItemIndex)
+                } else if case .tag = target?.kind {
+                    outlineView.setDropItem(target, dropChildIndex: NSOutlineViewDropOnItemIndex)
                 } else {
                     return []
                 }
+            }
+            // Dropping snippets on a tag tags them. Only snippets from the list, not folders or Finder files.
+            if case .tag = target?.kind {
+                guard info.draggingSource != nil else { return [] }
+                let urls = fileURLs(from: info)
+                if urls.contains(where: { store.snippet(withID: $0.path) == nil }) { return [] }
+                return info.draggingSourceOperationMask.contains(.copy) ? .copy : .move
             }
             guard let destination = destinationURL(for: target) else { return [] }
 
@@ -288,6 +308,11 @@ struct SidebarOutline: NSViewRepresentable {
 
         func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo,
                          item: Any?, childIndex index: Int) -> Bool {
+            if case .tag(let tag) = node(item)?.kind {
+                let urls = fileURLs(from: info)
+                DispatchQueue.main.async { [store] in store.receiveTagDrop(of: urls, tag: tag) }
+                return true
+            }
             guard let destination = destinationURL(for: node(item)) else { return false }
             let urls = fileURLs(from: info)
             let isInternal = info.draggingSource != nil
@@ -335,6 +360,9 @@ struct SidebarOutline: NSViewRepresentable {
                 menu.addItem(action("Reveal in Finder") { [store] in store.reveal(url) })
                 menu.addItem(.separator())
                 menu.addItem(action("Move to Trash") { [store] in store.trashFolder(url) })
+            } else if case .tag(let tag) = clicked?.kind {
+                menu.addItem(action("Rename Tag…") { [store] in store.tagPrompt = .rename(tag) })
+                menu.addItem(action("Remove Tag from All Snippets") { [store] in store.deleteTag(tag) })
             } else {
                 menu.addItem(action("New Folder") { [store] in store.createFolder(in: store.root) })
             }

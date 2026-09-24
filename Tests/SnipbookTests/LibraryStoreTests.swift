@@ -324,4 +324,138 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(store.root.path, root.path)
         XCTAssertTrue(fm.fileExists(atPath: path("keep.rb")))
     }
+
+    // MARK: Tags
+
+    private func tags(of relative: String) -> [String] {
+        (try? URL(fileURLWithPath: path(relative)).resourceValues(forKeys: [.tagNamesKey]))?.tagNames ?? []
+    }
+
+    func testTagsAreFinderTagsAndCounted() throws {
+        try write("a.rb")
+        try write("b.rb")
+        let store = makeStore()
+
+        store.addTag("#rails ", to: store.snippets)
+        store.addTag("Snippets", to: [store.snippet(withID: path("a.rb"))!])
+
+        XCTAssertEqual(tags(of: "a.rb").sorted(), ["Snippets", "rails"])
+        XCTAssertEqual(store.tagCounts, ["rails": 2, "Snippets": 1])
+        store.sidebarSelection = .tag("Snippets")
+        XCTAssertEqual(store.visibleSnippets.map(\.title), ["a"])
+    }
+
+    func testAddingATagReusesExistingCasing() throws {
+        try write("a.rb")
+        try write("b.rb")
+        let store = makeStore()
+        store.addTag("Rails", to: [store.snippet(withID: path("a.rb"))!])
+
+        store.addTag("rails", to: [store.snippet(withID: path("b.rb"))!])
+
+        XCTAssertEqual(store.allTags, ["Rails"])
+    }
+
+    func testTaggingALockedSnippetKeepsItLocked() throws {
+        let locked = try write("locked.rb")
+        try lock(locked)
+        let store = makeStore()
+
+        store.addTag("keep", to: store.snippets)
+
+        XCTAssertEqual(tags(of: "locked.rb"), ["keep"])
+        XCTAssertTrue(isLocked(locked))
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testSavingContentKeepsTags() throws {
+        try write("a.rb", "old")
+        let store = makeStore()
+        store.addTag("keep", to: store.snippets)
+
+        store.updateContent(of: path("a.rb"), to: "new")
+        store.flushSaves()
+
+        XCTAssertEqual(try String(contentsOfFile: path("a.rb"), encoding: .utf8), "new")
+        XCTAssertEqual(tags(of: "a.rb"), ["keep"])
+    }
+
+    func testMovingAndDuplicatingKeepTags() throws {
+        try write("A/a.rb")
+        try fm.createDirectory(at: root.appendingPathComponent("D"), withIntermediateDirectories: true)
+        let store = makeStore()
+        store.addTag("keep", to: store.snippets)
+
+        store.move(store.snippets, toFolder: root.appendingPathComponent("D"))
+        store.duplicate(store.snippets)
+
+        XCTAssertEqual(tags(of: "D/a.rb"), ["keep"])
+        XCTAssertEqual(tags(of: "D/a copy.rb"), ["keep"])
+    }
+
+    func testRenameTagMergesAndDeleteRemovesEverywhere() throws {
+        try write("a.rb")
+        try write("b.rb")
+        let store = makeStore()
+        store.addTag("js", to: [store.snippet(withID: path("a.rb"))!])
+        store.addTag("javascript", to: store.snippets)
+
+        store.renameTag("js", to: "javascript")
+        XCTAssertEqual(tags(of: "a.rb"), ["javascript"], "merged without a duplicate")
+        XCTAssertEqual(store.tagCounts, ["javascript": 2])
+
+        store.deleteTag("javascript")
+        XCTAssertTrue(store.allTags.isEmpty)
+        XCTAssertEqual(tags(of: "b.rb"), [])
+    }
+
+    func testNewSnippetInTagViewGetsTheTag() throws {
+        try write("a.rb")
+        let store = makeStore()
+        store.addTag("inbox", to: store.snippets)
+        store.sidebarSelection = .tag("inbox")
+
+        store.createSnippet(language: Language.forExtension("sh"))
+
+        XCTAssertEqual(tags(of: "Untitled.sh"), ["inbox"])
+        XCTAssertEqual(store.sidebarSelection, .tag("inbox"))
+        XCTAssertEqual(store.visibleSnippets.count, 2)
+    }
+
+    func testDroppingSnippetsOnATagTagsTheWholeSelection() throws {
+        try write("a.rb")
+        try write("b.rb")
+        try write("c.rb")
+        let store = makeStore()
+        store.selection = [path("a.rb"), path("b.rb")]
+
+        _ = store.dragItem(for: store.snippet(withID: path("a.rb"))!)
+        store.receiveTagDrop(of: [], tag: "picked")
+
+        XCTAssertEqual(store.tagCounts["picked"], 2)
+        XCTAssertEqual(tags(of: "c.rb"), [])
+    }
+
+    func testSearchMatchesTags() throws {
+        try write("a.rb")
+        try write("b.rb")
+        let store = makeStore()
+        store.addTag("deploy", to: [store.snippet(withID: path("b.rb"))!])
+
+        store.searchText = "#deploy"
+        XCTAssertEqual(store.visibleSnippets.map(\.title), ["b"])
+    }
+
+    // MARK: Quick Search
+
+    func testQuickSearchRanksTitleMatchesFirst() throws {
+        try write("zeta.sh", "grep something")
+        try write("grep tricks.sh", "rg")
+        try write("alpha grep.sh", "x")
+        let store = makeStore()
+
+        let titles = QuickSearchModel.results(in: store, query: "grep").map(\.title)
+
+        XCTAssertEqual(titles, ["grep tricks", "alpha grep", "zeta"])
+    }
 }

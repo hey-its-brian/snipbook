@@ -7,7 +7,10 @@ A native macOS code snippet manager, inspired by SnippetsLab.
 - **Folder organization.** Nested folders with recursive snippet counts. Drag snippets onto folders, drag folders onto folders to nest them (or onto All Snippets to move them to the top level), and drag files in from Finder to import them.
 - **Multi-select** with ⌘-click and ⇧-click: lock, unlock, copy, move, duplicate or trash many snippets at once, or drag the whole selection onto a folder.
 - **Settings** (⌘,): library location (with the choice to move your snippets or leave them), default folder for new snippets, whether folders list their subfolders' snippets, and a choice of four app icons.
-- Search across titles, languages and contents; copy a snippet with one click (⇧⌘C).
+- **Tags** are real macOS Finder tags, so they also show in Finder and Spotlight. A Tags section in the sidebar filters by tag (drop snippets on a tag to apply it), tag chips sit under each snippet's title, and multi-select can add or remove tags in bulk. Locked snippets can still be tagged.
+- **Quick Search** (⌥⇧Space from any app, changeable in Settings): type to find a snippet, Return pastes it into the app you were in, ⌘Return only copies. Auto-paste needs Accessibility permission for Snipbook.
+- **Line numbers** in the editor (toggle in Settings).
+- Search across titles, tags (`#tag`), languages and contents; copy a snippet with one click (⇧⌘C).
 
 ## Your library is just files
 
@@ -22,12 +25,13 @@ Requires macOS 14+ and Xcode (the Command Line Tools alone lack SwiftUI's macro 
 ./scripts/build-app.sh --install  # also copies it to /Applications
 ```
 
-The script uses `/Applications/Xcode.app` even if `xcode-select` points at the Command Line Tools. For quick iteration: `swift run`. Run the tests with `swift test`; they exercise the file operations (moves, nesting, counts, library moves with locked files) against a temporary library.
+The script signs with your Apple Development certificate when one is in the keychain (falling back to ad hoc). A stable signature matters because macOS ties Snipbook's Accessibility permission, used for auto-paste, to it. The script uses `/Applications/Xcode.app` even if `xcode-select` points at the Command Line Tools. For quick iteration: `swift run`. Run the tests with `swift test`; they exercise the file operations (moves, nesting, counts, library moves with locked files) against a temporary library.
 
 ## Shortcuts
 
 | Action | Keys |
 | --- | --- |
+| Quick Search (from any app) | ⌥⇧Space |
 | New snippet | ⌘N |
 | New folder | ⇧⌘N |
 | Settings | ⌘, |
@@ -44,9 +48,12 @@ The script uses `/Applications/Xcode.app` even if `xcode-select` points at the C
 | `SnipbookApp.swift` | App entry, menus and shortcuts |
 | `LibraryStore.swift` | Reads and writes the library on disk; locking, moves, autosave |
 | `Views.swift` | Sidebar, snippet list, detail view |
-| `CodeEditor.swift` | NSTextView with live highlighting |
+| `CodeEditor.swift` | NSTextView with live highlighting and a line-number ruler |
 | `Language.swift` | Extension to language table |
-| `SettingsView.swift` | Settings window |
+| `SettingsView.swift` | Settings window, including the shortcut recorder |
+| `SidebarOutline.swift` | Sidebar (NSOutlineView): folders, tags, drag and drop |
+| `QuickSearch.swift` | Quick Search panel and paste-back |
+| `HotKey.swift` | Global shortcut (Carbon `RegisterEventHotKey`) |
 | `AppIcon.swift` | Icon choices; sets the Dock icon and the app bundle's Finder icon |
 | `SeedLibrary.swift` | Starter snippets |
 | `DebugSnapshot.swift` | Debug-only window snapshot for UI checks |

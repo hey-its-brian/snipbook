@@ -40,7 +40,16 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP"
+# Sign with an Apple Development identity when there is one. macOS ties Accessibility permission
+# (needed for Quick Search auto-paste) to the signature; an ad-hoc signature changes on every
+# build, so the permission would have to be granted again after each rebuild.
+IDENTITY="$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ {print $2; exit}')"
+if [[ -n "$IDENTITY" ]] && codesign --force --deep --sign "$IDENTITY" "$APP" 2>/dev/null; then
+  echo "Signed with $IDENTITY"
+else
+  codesign --force --deep --sign - "$APP"
+  echo "Signed ad hoc (Accessibility permission will need re-granting after each rebuild)"
+fi
 echo "Built $APP"
 
 if [[ "${1:-}" == "--install" ]]; then

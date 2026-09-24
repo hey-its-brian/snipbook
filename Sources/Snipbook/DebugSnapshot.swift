@@ -8,6 +8,7 @@ import AppKit
 ///     -snapshotFolder "Ruby & Rails"  select a sidebar folder by path relative to the library
 ///     -snapshotSettings YES           capture the Settings window instead
 ///     -snapshotDark YES               force dark mode
+///     -snapshotQuickSearch "query"    capture the Quick Search panel
 @MainActor
 enum DebugSnapshot {
     static func scheduleIfRequested(store: LibraryStore) {
@@ -15,6 +16,7 @@ enum DebugSnapshot {
         guard let path = defaults.string(forKey: "snapshotPath") else { return }
         if defaults.bool(forKey: "snapshotDark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
         let wantsSettings = defaults.bool(forKey: "snapshotSettings")
+        let quickQuery = defaults.string(forKey: "snapshotQuickSearch")
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             if let folder = defaults.string(forKey: "snapshotFolder") {
@@ -27,6 +29,10 @@ enum DebugSnapshot {
                 }
                 store.selection = Set(matches.map(\.id))
             }
+            if let quickQuery {
+                QuickSearchController.shared.store = store
+                QuickSearchController.shared.show(query: quickQuery)
+            }
             if wantsSettings {
                 // Same as choosing Snipbook > Settings… (⌘,).
                 if let appMenu = NSApp.mainMenu?.items.first?.submenu,
@@ -36,7 +42,9 @@ enum DebugSnapshot {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 let visible = NSApp.windows.filter(\.isVisible)
-                let window = visible.first { $0.title.hasSuffix("Settings") == wantsSettings }
+                let window = quickQuery != nil
+                    ? visible.first { $0 is QuickSearchPanel }
+                    : visible.first { $0.title.hasSuffix("Settings") == wantsSettings }
                 guard let view = (window ?? visible.first)?.contentView?.superview,
                       let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
                 view.cacheDisplay(in: view.bounds, to: rep)

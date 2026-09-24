@@ -30,6 +30,46 @@ struct ContentView: View {
         } message: {
             Text(store.errorMessage ?? "")
         }
+        .modifier(TagPromptAlert(store: store))
+    }
+}
+
+/// Alert that asks for a tag name, for "New Tag…" and "Rename Tag…".
+struct TagPromptAlert: ViewModifier {
+    @Bindable var store: LibraryStore
+    @State private var text = ""
+
+    func body(content: Content) -> some View {
+        content
+            .alert(title, isPresented: Binding(
+                get: { store.tagPrompt != nil },
+                set: { if !$0 { store.tagPrompt = nil } }
+            )) {
+                TextField("Tag name", text: $text)
+                Button(buttonTitle) { commit() }
+                Button("Cancel", role: .cancel) {}
+            }
+            .onChange(of: store.tagPrompt?.id) { _, _ in
+                if case .rename(let tag) = store.tagPrompt { text = tag } else { text = "" }
+            }
+    }
+
+    private var title: String {
+        if case .rename = store.tagPrompt { return "Rename Tag" }
+        return "New Tag"
+    }
+
+    private var buttonTitle: String {
+        if case .rename = store.tagPrompt { return "Rename" }
+        return "Add Tag"
+    }
+
+    private func commit() {
+        switch store.tagPrompt {
+        case .add(let ids): store.addTag(text, to: store.snippets(withIDs: ids))
+        case .rename(let tag): store.renameTag(tag, to: text)
+        case nil: break
+        }
     }
 }
 
@@ -111,6 +151,7 @@ struct SnippetListView: View {
         switch store.sidebarSelection {
         case .locked: "Locked"
         case .folder(let path): URL(fileURLWithPath: path).lastPathComponent
+        case .tag(let tag): "#\(tag)"
         case .all, .none: "All Snippets"
         }
     }
@@ -134,6 +175,12 @@ struct SnippetRow: View {
                 .lineLimit(2)
             HStack(spacing: 6) {
                 LanguageBadge(language: snippet.language)
+                if !snippet.tags.isEmpty {
+                    Text(snippet.tags.map { "#" + $0 }.joined(separator: " "))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 if let folder {
                     Label(folder, systemImage: "folder").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
                 }
@@ -178,6 +225,7 @@ struct SnippetMenu: View {
             }
             Button("Duplicate") { store.duplicate(items) }
             MoveToMenu(store: store, items: items)
+            TagsMenu(store: store, items: items)
             Button("Reveal in Finder") { store.reveal(items.map(\.url)) }
             Divider()
             Button("Move to Trash", role: .destructive) { store.trash(items) }
@@ -199,6 +247,28 @@ struct MoveToMenu: View {
             }
         }
         .disabled(items.allSatisfy(\.isLocked))
+    }
+}
+
+/// Toggle existing tags on the items (checked when every item has it), or add a new one.
+struct TagsMenu: View {
+    let store: LibraryStore
+    let items: [Snippet]
+
+    var body: some View {
+        Menu("Tags") {
+            ForEach(store.allTags, id: \.self) { tag in
+                let all = items.allSatisfy { $0.tags.contains(tag) }
+                Toggle(tag, isOn: Binding(
+                    get: { all },
+                    set: { on in
+                        if on { store.addTag(tag, to: items) } else { store.removeTag(tag, from: items) }
+                    }
+                ))
+            }
+            if !store.allTags.isEmpty { Divider() }
+            Button("New Tag…") { store.tagPrompt = .add(to: Set(items.map(\.id))) }
+        }
     }
 }
 
@@ -250,7 +320,12 @@ struct SnippetDetailView: View {
                 .help("Lock prevents edits, renames, moves, and deletion (⌘L)")
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
+
+            TagBar(store: store, snippet: snippet)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
 
             if snippet.isLocked {
                 HStack(spacing: 6) {
@@ -270,7 +345,8 @@ struct SnippetDetailView: View {
             CodeEditor(fileID: snippet.id,
                        text: snippet.content,
                        language: snippet.language.id,
-                       isEditable: !snippet.isLocked) { newText in
+                       isEditable: !snippet.isLocked,
+                       showLineNumbers: store.showLineNumbers) { newText in
                 store.updateContent(of: snippet.id, to: newText)
             }
         }
@@ -285,6 +361,61 @@ struct SnippetDetailView: View {
             title = snippet.title
         } else if title != snippet.title {
             store.rename(snippet, to: title)
+        }
+    }
+}
+
+/// Tag chips under the snippet title, with a field to add more.
+struct TagBar: View {
+    let store: LibraryStore
+    let snippet: Snippet
+    @State private var newTag = ""
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "tag").foregroundStyle(.secondary).font(.caption)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(snippet.tags, id: \.self) { tag in
+                        HStack(spacing: 3) {
+                            Text(tag)
+                            Button {
+                                store.setTags(snippet.tags.filter { $0 != tag }, for: snippet)
+                            } label: {
+                                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove tag")
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.15), in: Capsule())
+                    }
+                    TextField("Add tag", text: $newTag)
+                        .textFieldStyle(.plain)
+                        .font(.caption)
+                        .frame(width: 90)
+                        .onSubmit {
+                            store.addTag(newTag, to: [snippet])
+                            newTag = ""
+                        }
+                }
+            }
+            let suggestions = store.allTags.filter { !snippet.tags.contains($0) }
+            if !suggestions.isEmpty {
+                Menu {
+                    ForEach(suggestions, id: \.self) { tag in
+                        Button(tag) { store.addTag(tag, to: [snippet]) }
+                    }
+                } label: {
+                    Image(systemName: "plus.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Add an existing tag")
+            }
         }
     }
 }
@@ -315,6 +446,7 @@ struct MultiSelectionView: View {
             HStack {
                 Button { store.copyToPasteboard(items) } label: { Label("Copy All", systemImage: "doc.on.doc") }
                 MoveToMenu(store: store, items: items).fixedSize()
+                TagsMenu(store: store, items: items).fixedSize()
                 Button { store.reveal(items.map(\.url)) } label: { Label("Reveal", systemImage: "folder") }
             }
             Button(role: .destructive) { store.trash(items) } label: { Label("Move to Trash", systemImage: "trash") }

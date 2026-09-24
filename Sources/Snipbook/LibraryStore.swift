@@ -13,6 +13,8 @@ struct Snippet: Identifiable, Hashable {
     let url: URL
     var content: String
     var isLocked: Bool
+    /// Finder tags, stored in the file's metadata.
+    var tags: [String] = []
     var id: String { url.path }
     var title: String { url.deletingPathExtension().lastPathComponent }
     var language: Language { Language.forExtension(url.pathExtension) }
@@ -23,6 +25,20 @@ enum SidebarItem: Hashable {
     case all
     case locked
     case folder(String)
+    case tag(String)
+}
+
+/// A pending tag name prompt (shown as an alert by ContentView).
+enum TagPrompt: Identifiable {
+    case add(to: Set<String>)
+    case rename(String)
+
+    var id: String {
+        switch self {
+        case .add(let ids): "add:" + ids.sorted().joined(separator: "|")
+        case .rename(let tag): "rename:" + tag
+        }
+    }
 }
 
 /// Where new snippets are created. Stored in UserDefaults as a string:
@@ -46,6 +62,8 @@ final class LibraryStore {
         static let newSnippetDestination = "newSnippetDestination"
         static let includeSubfolders = "includeSubfolders"
         static let appIcon = "appIcon"
+        static let showLineNumbers = "showLineNumbers"
+        static let pasteAfterQuickSearch = "pasteAfterQuickSearch"
     }
 
     private(set) var root: URL
@@ -53,6 +71,8 @@ final class LibraryStore {
     private(set) var snippets: [Snippet] = []
     /// Snippet count per folder path, including everything in its subfolders.
     private(set) var folderCounts: [String: Int] = [:]
+    /// Snippet count per tag.
+    private(set) var tagCounts: [String: Int] = [:]
 
     var sidebarSelection: SidebarItem? = .all {
         didSet { if sidebarSelection != oldValue { pruneSelectionToVisible() } }
@@ -61,6 +81,7 @@ final class LibraryStore {
     var searchText = ""
     var errorMessage: String?
     var folderPendingRename: URL?
+    var tagPrompt: TagPrompt?
     var lastLanguage: Language = .all[0]
 
     // MARK: Settings
@@ -71,6 +92,13 @@ final class LibraryStore {
     /// When a folder is selected, also list snippets from its subfolders.
     var includeSubfolders: Bool {
         didSet { defaults.set(includeSubfolders, forKey: Keys.includeSubfolders) }
+    }
+    var showLineNumbers: Bool {
+        didSet { defaults.set(showLineNumbers, forKey: Keys.showLineNumbers) }
+    }
+    /// After choosing a snippet in Quick Search, paste it into the app that was in front.
+    var pasteAfterQuickSearch: Bool {
+        didSet { defaults.set(pasteAfterQuickSearch, forKey: Keys.pasteAfterQuickSearch) }
     }
     var appIcon: AppIconChoice {
         didSet {
@@ -103,6 +131,8 @@ final class LibraryStore {
         newSnippetDestination = defaults.string(forKey: Keys.newSnippetDestination) ?? NewSnippetDestination.selected
         includeSubfolders = defaults.object(forKey: Keys.includeSubfolders) as? Bool ?? true
         appIcon = defaults.string(forKey: Keys.appIcon).flatMap(AppIconChoice.init(rawValue:)) ?? .midnight
+        showLineNumbers = defaults.object(forKey: Keys.showLineNumbers) as? Bool ?? true
+        pasteAfterQuickSearch = defaults.object(forKey: Keys.pasteAfterQuickSearch) as? Bool ?? true
 
         if explicitRoot == nil, !fm.fileExists(atPath: root.path) {
             SeedLibrary.install(at: root)
@@ -130,6 +160,11 @@ final class LibraryStore {
 
     var lockedCount: Int { snippets.filter(\.isLocked).count }
 
+    /// Every tag in the library, alphabetically.
+    var allTags: [String] {
+        tagCounts.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
     var visibleSnippets: [Snippet] {
         var list: [Snippet]
         switch sidebarSelection {
@@ -139,18 +174,24 @@ final class LibraryStore {
             list = snippets.filter {
                 $0.folderPath == path || (includeSubfolders && $0.folderPath.hasPrefix(path + "/"))
             }
+        case .tag(let tag):
+            list = snippets.filter { $0.tags.contains(tag) }
         case .all, .none:
             list = snippets
         }
         let query = searchText.trimmingCharacters(in: .whitespaces)
         if !query.isEmpty {
-            list = list.filter {
-                $0.title.localizedCaseInsensitiveContains(query)
-                    || $0.language.name.localizedCaseInsensitiveContains(query)
-                    || $0.content.localizedCaseInsensitiveContains(query)
-            }
+            list = list.filter { Self.matches($0, query: query) }
         }
         return list
+    }
+
+    static func matches(_ snippet: Snippet, query: String) -> Bool {
+        let tagQuery = query.hasPrefix("#") ? String(query.dropFirst()) : query
+        return snippet.title.localizedCaseInsensitiveContains(query)
+            || snippet.language.name.localizedCaseInsensitiveContains(query)
+            || snippet.tags.contains { $0.localizedCaseInsensitiveContains(tagQuery) }
+            || snippet.content.localizedCaseInsensitiveContains(query)
     }
 
     /// Folder selected in the sidebar, or the library root.
@@ -229,10 +270,19 @@ final class LibraryStore {
         }
         folderCounts = counts
 
+        var tags: [String: Int] = [:]
+        for snippet in snippets {
+            for tag in snippet.tags { tags[tag, default: 0] += 1 }
+        }
+        tagCounts = tags
+
         let ids = Set(snippets.map(\.id))
         let kept = selection.intersection(ids)
         if kept != selection { selection = kept }
         if case .folder(let path) = sidebarSelection, !isDirectory(URL(fileURLWithPath: path)) {
+            sidebarSelection = .all
+        }
+        if case .tag(let tag) = sidebarSelection, tagCounts[tag] == nil {
             sidebarSelection = .all
         }
     }
@@ -252,7 +302,11 @@ final class LibraryStore {
     private func loadSnippet(at url: URL) -> Snippet? {
         // Anything that is not UTF-8 text (images, binaries) is not a snippet.
         guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        return Snippet(url: url, content: content, isLocked: isLocked(url))
+        return Snippet(url: url, content: content, isLocked: isLocked(url), tags: readTags(url))
+    }
+
+    private func readTags(_ url: URL) -> [String] {
+        (try? url.resourceValues(forKeys: [.tagNamesKey]))?.tagNames ?? []
     }
 
     private func isLocked(_ url: URL) -> Bool {
@@ -288,6 +342,8 @@ final class LibraryStore {
             guard let snippet = snippet(withID: id), !snippet.isLocked else { continue }
             do {
                 try snippet.content.write(to: snippet.url, atomically: true, encoding: .utf8)
+                // An atomic write replaces the file, which drops its extended attributes (tags).
+                if !snippet.tags.isEmpty { try writeTags(snippet.tags, to: snippet.url, isLocked: false) }
             } catch {
                 report("Could not save \"\(snippet.title)\".", error)
             }
@@ -305,7 +361,12 @@ final class LibraryStore {
         do {
             try "".write(to: url, atomically: true, encoding: .utf8)
             searchText = ""
-            reveal(inSidebar: destination)
+            if case .tag(let tag) = sidebarSelection, folder == nil {
+                // Created while viewing a tag: give it that tag so it shows up here.
+                try writeTags([tag], to: url, isLocked: false)
+            } else {
+                reveal(inSidebar: destination)
+            }
             reload()
             selection = [url.standardizedFileURL.path]
         } catch {
@@ -334,6 +395,7 @@ final class LibraryStore {
                                    name: "\(snippet.title) copy.\(snippet.url.pathExtension)")
             do {
                 try snippet.content.write(to: target, atomically: true, encoding: .utf8)
+                if !snippet.tags.isEmpty { try writeTags(snippet.tags, to: target, isLocked: false) }
                 created.insert(target.standardizedFileURL.path)
             } catch {
                 report("Could not duplicate \"\(snippet.title)\".", error)
@@ -472,6 +534,81 @@ final class LibraryStore {
 
     func reveal(_ url: URL) { reveal([url]) }
 
+    // MARK: - Tags
+
+    /// Trims, drops a leading "#", and reuses the casing of an existing tag with the same name.
+    func canonicalTag(_ raw: String) -> String? {
+        var name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.hasPrefix("#") { name.removeFirst() }
+        name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return nil }
+        return allTags.first { $0.caseInsensitiveCompare(name) == .orderedSame } ?? name
+    }
+
+    func setTags(_ tags: [String], for snippet: Snippet) {
+        flushSaves()
+        do {
+            try writeTags(tags, to: snippet.url, isLocked: snippet.isLocked)
+        } catch {
+            report("Could not update the tags on \"\(snippet.title)\".", error)
+        }
+        reload()
+    }
+
+    func addTag(_ raw: String, to items: [Snippet]) {
+        guard let tag = canonicalTag(raw) else { return }
+        flushSaves()
+        for snippet in items where !snippet.tags.contains(tag) {
+            do {
+                try writeTags(snippet.tags + [tag], to: snippet.url, isLocked: snippet.isLocked)
+            } catch {
+                report("Could not tag \"\(snippet.title)\".", error)
+            }
+        }
+        reload()
+    }
+
+    func removeTag(_ tag: String, from items: [Snippet]) {
+        flushSaves()
+        for snippet in items where snippet.tags.contains(tag) {
+            do {
+                try writeTags(snippet.tags.filter { $0 != tag }, to: snippet.url, isLocked: snippet.isLocked)
+            } catch {
+                report("Could not untag \"\(snippet.title)\".", error)
+            }
+        }
+        reload()
+    }
+
+    /// Renames a tag everywhere; renaming onto an existing tag merges the two.
+    func renameTag(_ old: String, to raw: String) {
+        guard let new = canonicalTag(raw), new != old else { return }
+        flushSaves()
+        for snippet in snippets where snippet.tags.contains(old) {
+            var tags = snippet.tags.map { $0 == old ? new : $0 }
+            tags = tags.enumerated().filter { tags.firstIndex(of: $0.element) == $0.offset }.map(\.element)
+            do {
+                try writeTags(tags, to: snippet.url, isLocked: snippet.isLocked)
+            } catch {
+                report("Could not retag \"\(snippet.title)\".", error)
+            }
+        }
+        if sidebarSelection == .tag(old) { sidebarSelection = .tag(new) }
+        reload()
+    }
+
+    func deleteTag(_ tag: String) {
+        removeTag(tag, from: snippets)
+    }
+
+    /// Tags are metadata, not content, so locked snippets can still be tagged:
+    /// the Finder lock is lifted for the write and restored straight after.
+    private func writeTags(_ tags: [String], to url: URL, isLocked: Bool) throws {
+        if isLocked { try fm.setAttributes([.immutable: false], ofItemAtPath: url.path) }
+        defer { if isLocked { try? fm.setAttributes([.immutable: true], ofItemAtPath: url.path) } }
+        try (url as NSURL).setResourceValue(tags, forKey: .tagNamesKey)
+    }
+
     // MARK: - Drag and drop
 
     /// Drag payload for a snippet row: the file URL, so rows can also be dragged out to Finder.
@@ -494,6 +631,17 @@ final class LibraryStore {
 
     func noteDragStarted(folder: URL) {
         dragIDs = []
+    }
+
+    /// Tags the dragged snippets. `urls` may be empty when the list hasn't provided them yet.
+    func receiveTagDrop(of urls: [URL], tag: String) {
+        var ids = dragIDs
+        for url in urls {
+            let path = Self.normalized(url).path
+            if snippet(withID: path) != nil { ids.formUnion(dragIDs.contains(path) ? dragIDs : [path]) }
+        }
+        dragIDs = []
+        addTag(tag, to: snippets(withIDs: ids))
     }
 
     /// Moves the snippets recorded by `dragItem(for:)` when the drop carried no readable URLs.

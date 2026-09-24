@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct SnipbookApp: App {
+    @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
     @State private var store = LibraryStore()
 
     init() {
@@ -13,7 +14,12 @@ struct SnipbookApp: App {
         Window("Snipbook", id: "main") {
             ContentView(store: store)
                 .frame(minWidth: 900, minHeight: 520)
-                .onAppear { AppIconManager.syncOnLaunch(store.appIcon) }
+                .onAppear {
+                    AppIconManager.syncOnLaunch(store.appIcon)
+                    QuickSearchController.shared.store = store
+                    HotKeyCenter.shared.onPress = { QuickSearchController.shared.toggle() }
+                    HotKeyCenter.shared.start()
+                }
                 #if DEBUG
                 .onAppear { DebugSnapshot.scheduleIfRequested(store: store) }
                 #endif
@@ -32,6 +38,12 @@ struct SnipbookApp: App {
             SettingsView(store: store)
         }
     }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Keep running with no windows open so the Quick Search shortcut keeps working.
+    /// Clicking the Dock icon brings the main window back.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 struct SnipbookCommands: Commands {
@@ -57,6 +69,11 @@ struct SnipbookCommands: Commands {
 
         CommandMenu("Snippet") {
             let items = store.selectedSnippets
+            Button("Quick Search" + (HotKeyCenter.shared.shortcut.map { " (\($0.display))" } ?? "")) {
+                QuickSearchController.shared.show()
+            }
+            Divider()
+
             let plural = items.count > 1 ? " \(items.count) Snippets" : ""
             Button(!items.isEmpty && items.allSatisfy(\.isLocked) ? "Unlock\(plural)" : "Lock\(plural)") {
                 store.toggleLock(items)
