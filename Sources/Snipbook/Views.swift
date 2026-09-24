@@ -40,35 +40,7 @@ struct SidebarView: View {
     @State private var renameText = ""
 
     var body: some View {
-        List(selection: $store.sidebarSelection) {
-            Section("Library") {
-                DropTargetLabel(title: "All Snippets", systemImage: "tray.full") { urls in
-                    store.receiveDrop(of: urls, into: store.root)
-                }
-                .badge(store.snippets.count)
-                .tag(SidebarItem.all)
-                .help("Drop folders or snippets here to move them to the top level")
-
-                Label("Locked", systemImage: "lock")
-                    .badge(store.lockedCount)
-                    .tag(SidebarItem.locked)
-            }
-            Section("Folders") {
-                OutlineGroup(store.folders, children: \.children) { folder in
-                    DropTargetLabel(title: folder.name, systemImage: "folder") { urls in
-                        store.receiveDrop(of: urls, into: folder.url)
-                    }
-                    .draggable(store.beginDrag(folder: folder))
-                    .badge(store.folderCounts[folder.id] ?? 0)
-                    .tag(SidebarItem.folder(folder.id))
-                    .contextMenu { folderMenu(folder) }
-                }
-            }
-        }
-        .listStyle(.sidebar)
-        .contextMenu {
-            Button("New Folder") { store.createFolder(in: store.root) }
-        }
+        SidebarOutline(store: store)
         .toolbar {
             ToolbarItem {
                 Button { store.createFolder() } label: {
@@ -91,40 +63,6 @@ struct SidebarView: View {
             renameText = url?.lastPathComponent ?? ""
         }
     }
-
-    @ViewBuilder
-    private func folderMenu(_ folder: FolderNode) -> some View {
-        Button("New Snippet Here") { store.createSnippet(language: store.lastLanguage, in: folder.url) }
-        Button("New Subfolder") { store.createFolder(in: folder.url) }
-        Divider()
-        Button("Rename…") { store.folderPendingRename = folder.url }
-        Button("Reveal in Finder") { store.reveal(folder.url) }
-        Divider()
-        Button("Move to Trash", role: .destructive) { store.trashFolder(folder.url) }
-    }
-}
-
-/// Sidebar row that accepts dropped snippets, folders, and Finder files, and highlights while targeted.
-struct DropTargetLabel: View {
-    let title: String
-    let systemImage: String
-    let onDrop: ([URL]) -> Bool
-    @State private var isTargeted = false
-
-    var body: some View {
-        Label(title, systemImage: isTargeted ? "\(systemImage).fill" : systemImage)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .background {
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(Color.accentColor.opacity(isTargeted ? 0.3 : 0))
-                    .padding(.horizontal, -6)
-                    .padding(.vertical, -3)
-            }
-            .dropDestination(for: URL.self) { urls, _ in
-                onDrop(urls)
-            } isTargeted: { isTargeted = $0 }
-    }
 }
 
 // MARK: - Snippet list
@@ -136,7 +74,7 @@ struct SnippetListView: View {
         List(selection: $store.selection) {
             ForEach(store.visibleSnippets) { snippet in
                 SnippetRow(snippet: snippet, folder: store.folderLabel(for: snippet))
-                    .draggable(store.beginDrag(snippet))
+                    .itemProvider { store.dragItem(for: snippet) }
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in

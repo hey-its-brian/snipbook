@@ -54,7 +54,9 @@ final class LibraryStore {
     /// Snippet count per folder path, including everything in its subfolders.
     private(set) var folderCounts: [String: Int] = [:]
 
-    var sidebarSelection: SidebarItem? = .all
+    var sidebarSelection: SidebarItem? = .all {
+        didSet { if sidebarSelection != oldValue { pruneSelectionToVisible() } }
+    }
     var selection = Set<String>()
     var searchText = ""
     var errorMessage: String?
@@ -407,10 +409,18 @@ final class LibraryStore {
         }
         reload()
         selection = newSelection.intersection(Set(snippets.map(\.id)))
+        pruneSelectionToVisible()
         if !skippedLocked.isEmpty {
             errorMessage = "Locked snippets were not moved: \(skippedLocked.joined(separator: ", ")). Unlock them first."
         }
         return movedAny
+    }
+
+    /// Drops selected snippets the list no longer shows (after switching folders or moving them away).
+    private func pruneSelectionToVisible() {
+        let visible = Set(visibleSnippets.map(\.id))
+        let kept = selection.intersection(visible)
+        if kept != selection { selection = kept }
     }
 
     // MARK: - Locking, copying, trashing
@@ -464,15 +474,42 @@ final class LibraryStore {
 
     // MARK: - Drag and drop
 
-    /// Drag payload for a snippet row. Dragging a selected row carries the whole selection.
+    /// Drag payload for a snippet row: the file URL, so rows can also be dragged out to Finder.
+    /// Dragging a selected row carries the whole selection.
+    func dragItem(for snippet: Snippet) -> NSItemProvider {
+        dragIDs = selection.contains(snippet.id) ? selection : [snippet.id]
+        return NSItemProvider(object: snippet.url as NSURL)
+    }
+
+    /// Kept for tests: same bookkeeping as `dragItem(for:)`.
     func beginDrag(_ snippet: Snippet) -> URL {
         dragIDs = selection.contains(snippet.id) ? selection : [snippet.id]
         return snippet.url
     }
 
     func beginDrag(folder: FolderNode) -> URL {
-        dragIDs = []
+        noteDragStarted(folder: folder.url)
         return folder.url
+    }
+
+    func noteDragStarted(folder: URL) {
+        dragIDs = []
+    }
+
+    /// Moves the snippets recorded by `dragItem(for:)` when the drop carried no readable URLs.
+    func dropPendingDrag(into folder: URL) {
+        let items = snippets(withIDs: dragIDs)
+        dragIDs = []
+        if !items.isEmpty { move(items, toFolder: folder) }
+    }
+
+    func isInLibrary(_ url: URL) -> Bool {
+        Self.normalized(url).path.hasPrefix(root.path + "/")
+    }
+
+    /// Drops can deliver file reference URLs (file:///.file/id=...); turn them back into paths.
+    nonisolated static func normalized(_ url: URL) -> URL {
+        ((url as NSURL).filePathURL ?? url).standardizedFileURL
     }
 
     /// Handles drops onto a folder (or the root). Snippets and folders from the library are moved;
@@ -486,7 +523,7 @@ final class LibraryStore {
         var didSomething = false
 
         for url in urls where url.isFileURL {
-            let source = url.standardizedFileURL
+            let source = Self.normalized(url)
             if source.path.hasPrefix(rootPrefix) {
                 if snippet(withID: source.path) != nil {
                     snippetIDs.formUnion(dragIDs.contains(source.path) ? dragIDs : [source.path])
@@ -564,10 +601,12 @@ final class LibraryStore {
             return false
         }
         // Carry selections and the new-snippet setting along to the folder's new location.
+        // Reload first so the rebased paths exist when the selection is checked against the list.
+        var newSidebar = sidebarSelection
         if case .folder(let path) = sidebarSelection, let moved = rebase(path, from: oldPath, to: newPath) {
-            sidebarSelection = .folder(moved)
+            newSidebar = .folder(moved)
         }
-        selection = Set(selection.map { rebase($0, from: oldPath, to: newPath) ?? $0 })
+        let newSelection = Set(selection.map { rebase($0, from: oldPath, to: newPath) ?? $0 })
         if newSnippetDestination.hasPrefix("folder:") {
             let old = root.appendingPathComponent(String(newSnippetDestination.dropFirst("folder:".count))).standardizedFileURL.path
             if let moved = rebase(old, from: oldPath, to: newPath) {
@@ -575,6 +614,8 @@ final class LibraryStore {
             }
         }
         reload()
+        sidebarSelection = newSidebar
+        selection = newSelection.intersection(Set(snippets.map(\.id)))
         return true
     }
 

@@ -106,6 +106,19 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(store.selection, [path("D/x.rb"), path("D/y.rb")])
     }
 
+    func testMovingSelectedSnippetsOutOfTheViewedFolderDeselectsThem() throws {
+        try write("A/x.rb")
+        try write("A/y.rb")
+        try fm.createDirectory(at: root.appendingPathComponent("D"), withIntermediateDirectories: true)
+        let store = makeStore()
+        store.sidebarSelection = .folder(path("A"))
+        store.selection = [path("A/x.rb"), path("A/y.rb")]
+
+        store.move(store.selectedSnippets, toFolder: root.appendingPathComponent("D"))
+
+        XCTAssertTrue(store.selection.isEmpty, "moved rows are no longer in the list, so nothing stays selected")
+    }
+
     func testDraggingAnUnselectedRowMovesOnlyThatRow() throws {
         try write("A/x.rb")
         try write("A/y.rb")
